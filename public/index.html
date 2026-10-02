@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>Entre Amigos · Chat</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/socket.io/socket.io.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="brand">
+      <div class="brand-mark" aria-hidden="true">✳</div>
+      <div><p class="eyebrow">UN LUGAR PARA LOS TUYOS</p><h1>Entre Amigos</h1></div>
+    </header>
+
+    <section id="join-panel" class="card join-card" aria-labelledby="join-title">
+      <p class="eyebrow">TU CONVERSACIÓN, A TU MANERA</p>
+      <h2 id="join-title">Entra al chat</h2>
+      <p class="muted">Usa el mismo código de sala que tus amigos para encontrarlos.</p>
+      <form id="join-form">
+        <label for="username">Tu nombre</label>
+        <input id="username" name="username" maxlength="24" autocomplete="nickname" placeholder="Por ejemplo, Alex" required>
+        <label for="room">Código de sala</label>
+        <input id="room" name="room" maxlength="24" pattern="[A-Za-z0-9_-]{3,24}" autocomplete="off" placeholder="Ejemplo: PLANDELVIERNES" required>
+        <button class="primary" type="submit">Entrar al chat <span aria-hidden="true">→</span></button>
+        <p id="join-error" class="error" role="alert"></p>
+      </form>
+      <p class="hint">Comparte el código solo con las personas que quieras invitar.</p>
+    </section>
+
+    <section id="chat-panel" class="card chat-card" hidden aria-label="Conversación">
+      <header class="chat-header">
+        <div><p class="eyebrow">SALA</p><h2 id="room-title"></h2></div>
+        <div class="chat-actions"><span class="online"><i></i> En línea</span><button id="copy-link" class="secondary" type="button">Copiar invitación</button><button id="leave" class="icon-button" type="button" aria-label="Salir de la sala" title="Salir">×</button></div>
+      </header>
+      <ol id="messages" class="messages" aria-live="polite" aria-label="Mensajes"></ol>
+      <form id="message-form" class="message-form">
+        <label class="visually-hidden" for="message">Escribe un mensaje</label>
+        <input id="message" maxlength="500" autocomplete="off" placeholder="Escribe algo bonito…" required>
+        <button class="primary send-button" type="submit" aria-label="Enviar mensaje">Enviar <span aria-hidden="true">↑</span></button>
+      </form>
+      <p id="chat-notice" class="chat-notice" aria-live="polite">Los mensajes son temporales y desaparecen cuando se reinicia el servidor.</p>
+    </section>
+
+    <footer>Hecho para conversar con calma <span aria-hidden="true">♥</span></footer>
+  </main>
+</body>
+</html>
