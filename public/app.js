@@ -9,8 +9,13 @@
   const roomInput = document.querySelector("#room");
   const usernameInput = document.querySelector("#username");
   const messageInput = document.querySelector("#message");
+  const imageInput = document.querySelector("#image-file");
+  const imagePreview = document.querySelector("#image-preview");
+  const previewImage = document.querySelector("#preview-image");
+  const chatNotice = document.querySelector("#chat-notice");
   let currentRoom = "";
   let currentUsername = "";
+  let selectedImageData = "";
   const seenIds = new Set();
 
   const roomFromUrl = new URLSearchParams(location.search).get("sala");
@@ -40,10 +45,25 @@
     const date = new Date(message.time);
     time.dateTime = date.toISOString();
     time.textContent = new Intl.DateTimeFormat("es", { hour: "2-digit", minute: "2-digit" }).format(date);
-    const text = document.createElement("p");
-    text.textContent = message.text;
     meta.append(name, time);
-    bubble.append(meta, text);
+    bubble.append(meta);
+    if (message.text) {
+      const text = document.createElement("p");
+      text.textContent = message.text;
+      bubble.append(text);
+    }
+    if (message.imageData) {
+      const image = document.createElement("img");
+      image.className = "chat-image";
+      image.src = message.imageData;
+      image.alt = `Imagen enviada por ${message.username}`;
+      bubble.append(image);
+    } else if (message.imageExpired) {
+      const expired = document.createElement("p");
+      expired.className = "image-expired";
+      expired.textContent = "Esta imagen temporal ya no está disponible.";
+      bubble.append(expired);
+    }
     item.append(bubble);
     messagesList.append(item);
     messagesList.scrollTop = messagesList.scrollHeight;
@@ -76,10 +96,84 @@
   messageForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const text = messageInput.value.trim();
-    if (!text || !currentRoom) return;
-    socket.emit("send-message", text);
-    messageInput.value = "";
-    messageInput.focus();
+    if ((!text && !selectedImageData) || !currentRoom) return;
+    const sendButton = messageForm.querySelector("button[type='submit']");
+    sendButton.disabled = true;
+    socket.emit("send-message", { text, imageData: selectedImageData }, (result) => {
+      sendButton.disabled = false;
+      if (!result?.ok) {
+        chatNotice.textContent = result?.error || "No se pudo enviar. Inténtalo otra vez.";
+        chatNotice.classList.add("offline");
+        return;
+      }
+      messageInput.value = "";
+      clearSelectedImage();
+      messageInput.focus();
+    });
+  });
+
+  function clearSelectedImage() {
+    selectedImageData = "";
+    imageInput.value = "";
+    previewImage.removeAttribute("src");
+    imagePreview.hidden = true;
+  }
+
+  document.querySelector("#choose-image").addEventListener("click", () => imageInput.click());
+  document.querySelector("#remove-image").addEventListener("click", clearSelectedImage);
+  imageInput.addEventListener("change", async () => {
+    const file = imageInput.files?.[0];
+    if (!file) return;
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type)) {
+      chatNotice.textContent = "Elige una imagen JPG, PNG o WEBP.";
+      chatNotice.classList.add("offline");
+      clearSelectedImage();
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      chatNotice.textContent = "La imagen original es muy grande. Elige una de menos de 12 MB.";
+      chatNotice.classList.add("offline");
+      clearSelectedImage();
+      return;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      let scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height));
+      let compressed;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        compressed = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.76));
+        if (compressed && compressed.size <= 1_000_000) break;
+        scale *= 0.78;
+      }
+      bitmap.close();
+      if (!compressed || compressed.size > 1_000_000) {
+        chatNotice.textContent = "No pude reducir esa imagen lo suficiente. Prueba con otra.";
+        chatNotice.classList.add("offline");
+        clearSelectedImage();
+        return;
+      }
+      selectedImageData = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("No se pudo leer la imagen."));
+        reader.readAsDataURL(compressed);
+      });
+      previewImage.src = selectedImageData;
+      imagePreview.hidden = false;
+      chatNotice.textContent = "La imagen es temporal y desaparecerá al reiniciarse el servidor.";
+      chatNotice.classList.remove("offline");
+    } catch {
+      chatNotice.textContent = "No pude abrir esa imagen. Prueba con otra.";
+      chatNotice.classList.add("offline");
+      clearSelectedImage();
+    }
   });
 
   socket.on("message", addMessage);
@@ -94,11 +188,12 @@
         }
       });
     }
-    document.querySelector("#chat-notice").classList.remove("offline");
+    chatNotice.textContent = "Las imágenes y mensajes son temporales; se borran cuando se reinicia el servidor.";
+    chatNotice.classList.remove("offline");
   });
   socket.on("disconnect", () => {
-    document.querySelector("#chat-notice").textContent = "Se perdió la conexión. Intentando reconectar…";
-    document.querySelector("#chat-notice").classList.add("offline");
+    chatNotice.textContent = "Se perdió la conexión. Intentando reconectar…";
+    chatNotice.classList.add("offline");
   });
 
   document.querySelector("#leave").addEventListener("click", () => {

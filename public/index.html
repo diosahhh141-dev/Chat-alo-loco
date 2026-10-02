@@ -37,12 +37,19 @@
         <div class="chat-actions"><span class="online"><i></i> En línea</span><button id="copy-link" class="secondary" type="button">Copiar invitación</button><button id="leave" class="icon-button" type="button" aria-label="Salir de la sala" title="Salir">×</button></div>
       </header>
       <ol id="messages" class="messages" aria-live="polite" aria-label="Mensajes"></ol>
+      <div id="image-preview" class="image-preview" hidden>
+        <img id="preview-image" alt="Vista previa de la imagen seleccionada">
+        <span>Imagen lista para enviar</span>
+        <button id="remove-image" class="secondary" type="button">Quitar</button>
+      </div>
       <form id="message-form" class="message-form">
         <label class="visually-hidden" for="message">Escribe un mensaje</label>
-        <input id="message" maxlength="500" autocomplete="off" placeholder="Escribe algo bonito…" required>
+        <input id="message" maxlength="500" autocomplete="off" placeholder="Escribe algo bonito…">
+        <input id="image-file" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp">
+        <button id="choose-image" class="secondary image-button" type="button" aria-label="Elegir imagen" title="Elegir imagen">＋ Imagen</button>
         <button class="primary send-button" type="submit" aria-label="Enviar mensaje">Enviar <span aria-hidden="true">↑</span></button>
       </form>
-      <p id="chat-notice" class="chat-notice" aria-live="polite">Los mensajes son temporales y desaparecen cuando se reinicia el servidor.</p>
+      <p id="chat-notice" class="chat-notice" aria-live="polite">Las imágenes y mensajes son temporales; se borran cuando se reinicia el servidor.</p>
     </section>
 
     <footer>Hecho para conversar con calma <span aria-hidden="true">♥</span></footer>
