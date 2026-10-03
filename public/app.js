@@ -2,6 +2,7 @@
   const appConfig = window.APP_CONFIG || {};
   const socialMode = Boolean(appConfig.supabaseEnabled && window.supabase?.createClient);
   const supabase = socialMode ? window.supabase.createClient(appConfig.supabaseUrl, appConfig.supabaseAnonKey) : null;
+    if (socialMode) window.APP_SUPABASE_CLIENT = supabase;
   const socket = io({ autoConnect: !socialMode });
   const authPanel = document.querySelector("#auth-panel");
   const socialPanel = document.querySelector("#social-panel");
