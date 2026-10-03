@@ -63,7 +63,7 @@
         </form>
         <div class="section-heading"><div><p class="eyebrow">TUS MOMENTOS</p><h3>Publicar historia</h3></div></div>
         <form id="story-form" class="story-form">
-          <input id="story-file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" required>
+          <label for="story-file">Fotos o videos (hasta 10)</label><input id="story-file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" multiple required>
           <input id="story-caption" maxlength="180" placeholder="Escribe una descripción (opcional)">
           <button class="primary" type="submit">Compartir por 24 h</button>
           <p class="hint">Fotos o videos de hasta 50 MB. La historia desaparece después de 24 horas.</p>
@@ -73,8 +73,8 @@
     </section>
 
     <section id="story-viewer" class="story-viewer" hidden role="dialog" aria-modal="true" aria-label="Historia">
-      <button id="close-story" class="icon-button story-close" type="button" aria-label="Cerrar historia">×</button>
-      <div id="story-media-slot"></div><p id="story-caption-view" class="story-caption-view"></p>
+      <div class="story-frame"><div id="story-progress" class="story-progress" aria-hidden="true"></div><header class="story-viewer-head"><strong id="story-owner"></strong><span id="story-counter"></span><button id="close-story" class="icon-button story-close" type="button" aria-label="Cerrar historia" title="Cerrar">×</button></header>
+      <div class="story-stage"><div id="story-media-slot"></div><button id="story-prev" class="story-nav-button story-prev" type="button" aria-label="Historia anterior" title="Anterior">‹</button><button id="story-next" class="story-nav-button story-next" type="button" aria-label="Siguiente historia" title="Siguiente">›</button></div><p id="story-caption-view" class="story-caption-view"></p><p class="story-help">Pulsa a la izquierda para volver y a la derecha para avanzar</p></div>
     </section>
 
     <section id="join-panel" class="card join-card" aria-labelledby="join-title">
