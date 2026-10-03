@@ -97,14 +97,25 @@ io.on("connection", (socket) => {
 
     while (imageData && storedImages.size >= MAX_STORED_IMAGES) expireOldestImage();
 
+    const messages = roomMessages.get(room) || [];
+    const original = typeof payload?.replyToId === "string"
+      ? messages.find((item) => item.id === payload.replyToId)
+      : null;
+    const replyTo = original ? {
+      id: original.id,
+      username: cleanText(original.username, 24),
+      text: cleanText(original.text, 120),
+      hasImage: Boolean(original.imageData || original.imageExpired)
+    } : null;
+
     const message = {
       id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
       username,
       text,
       imageData,
+      replyTo,
       time: new Date(now).toISOString()
     };
-    const messages = roomMessages.get(room) || [];
     messages.push(message);
     if (messages.length > MAX_MESSAGES_PER_ROOM) {
       const removed = messages.shift();
