@@ -1,4 +1,5 @@
 const path = require("node:path");
+const crypto = require("node:crypto");
 const express = require("express");
 const { createServer } = require("node:http");
 const { Server } = require("socket.io");
@@ -16,6 +17,39 @@ const MAX_IMAGE_BYTES = 1_000_000;
 const MAX_STORED_IMAGES = 32;
 const roomMessages = new Map();
 const storedImages = new Map();
+const roomControls = new Map();
+
+function getRoomControls(room) {
+  if (!roomControls.has(room)) {
+    roomControls.set(room, {
+      adminKeyHash: "",
+      creatorUsername: "",
+      admins: new Set(),
+      adminNames: new Set(),
+      bannedUsers: new Set(),
+      mutedUsers: new Set(),
+      adminOnly: false,
+      announcement: ""
+    });
+  }
+  return roomControls.get(room);
+}
+
+function keyHash(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function publicRoomSettings(controls) {
+  return { adminOnly: controls.adminOnly, announcement: controls.announcement };
+}
+
+function emitRoomSettings(room, controls) {
+  io.to(room).emit("room-settings", publicRoomSettings(controls));
+}
+
+function removeRoomImages(messages = []) {
+  for (const message of messages) storedImages.delete(message.id);
+}
 
 app.use(express.static(path.join(__dirname, "public")));
 app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -49,7 +83,7 @@ function expireOldestImage() {
 }
 
 io.on("connection", (socket) => {
-  socket.on("join-room", ({ room: rawRoom, username: rawUsername } = {}, reply = () => {}) => {
+  socket.on("join-room", ({ room: rawRoom, username: rawUsername, adminKey: rawAdminKey } = {}, reply = () => {}) => {
     const room = validRoom(rawRoom);
     const username = cleanText(rawUsername, 24);
 
@@ -58,14 +92,48 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (socket.data.room) socket.leave(socket.data.room);
+    const controls = getRoomControls(room);
+    const normalizedName = username.toLocaleLowerCase("es");
+    if (controls.bannedUsers.has(normalizedName)) {
+      reply({ ok: false, error: "Este nombre está bloqueado en esta sala." });
+      return;
+    }
+
+    const adminKey = typeof rawAdminKey === "string" ? rawAdminKey.trim() : "";
+    let admin = false;
+    let creator = false;
+    let adminKeyError = false;
+    if (adminKey) {
+      if (adminKey.length < 8) {
+        adminKeyError = true;
+      } else if (!controls.adminKeyHash) {
+        controls.adminKeyHash = keyHash(adminKey);
+        controls.creatorUsername = normalizedName;
+        admin = true;
+        creator = true;
+      } else if (controls.adminKeyHash === keyHash(adminKey)) {
+        admin = true;
+        creator = normalizedName === controls.creatorUsername;
+      } else {
+        adminKeyError = true;
+      }
+    }
+
+    if (socket.data.room) {
+      getRoomControls(socket.data.room).admins.delete(socket.id);
+      socket.leave(socket.data.room);
+    }
+    if (admin) {
+      controls.admins.add(socket.id);
+      controls.adminNames.add(normalizedName);
+    }
     socket.data.room = room;
     socket.data.username = username;
     socket.data.lastMessageAt = 0;
     socket.join(room);
 
     const messages = roomMessages.get(room) || [];
-    reply({ ok: true, room, messages });
+    reply({ ok: true, room, messages, admin, creator, adminKeyError, settings: publicRoomSettings(controls) });
     socket.to(room).emit("notice", `${username} se unió al chat.`);
   });
 
@@ -74,6 +142,25 @@ io.on("connection", (socket) => {
     const username = socket.data.username;
     if (!room || !username) {
       reply({ ok: false, error: "Entra a una sala antes de enviar mensajes." });
+      return;
+    }
+    const controls = getRoomControls(room);
+    const isAdmin = controls.admins.has(socket.id);
+    const isCreator = isAdmin && username.toLocaleLowerCase("es") === controls.creatorUsername;
+    const normalizedName = username.toLocaleLowerCase("es");
+    if (controls.bannedUsers.has(normalizedName)) {
+      reply({ ok: false, error: "Tu nombre está bloqueado en esta sala." });
+      socket.emit("moderation-kick", "Tu nombre está bloqueado en esta sala.");
+      socket.leave(room);
+      socket.data.room = "";
+      return;
+    }
+    if (controls.mutedUsers.has(normalizedName) && !isAdmin) {
+      reply({ ok: false, error: "Un administrador silenció tu nombre en esta sala." });
+      return;
+    }
+    if (controls.adminOnly && !isAdmin) {
+      reply({ ok: false, error: "La sala está en modo solo administradores." });
       return;
     }
 
@@ -111,6 +198,8 @@ io.on("connection", (socket) => {
     const message = {
       id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
       username,
+      isAdmin,
+      isCreator,
       text,
       imageData,
       replyTo,
@@ -127,7 +216,117 @@ io.on("connection", (socket) => {
     reply({ ok: true });
   });
 
+  socket.on("admin-command", async ({ command: rawCommand } = {}, reply = () => {}) => {
+    const room = socket.data.room;
+    const username = socket.data.username;
+    const command = cleanText(rawCommand, 600);
+    if (!room || !username || !command.startsWith("/")) {
+      reply({ ok: false, message: "No pude leer ese comando." });
+      return;
+    }
+    const [rawName = "", ...args] = command.slice(1).split(/\s+/);
+    const name = rawName.toLocaleLowerCase("es");
+    const controls = getRoomControls(room);
+    const isAdmin = controls.admins.has(socket.id);
+    const targetName = cleanText(args.join(" "), 24);
+    const normalizedTarget = targetName.toLocaleLowerCase("es");
+    const findMembers = async () => io.in(room).fetchSockets();
+    const kickNamedMember = async (target, reason) => {
+      const members = await findMembers();
+      let count = 0;
+      for (const member of members) {
+        if (member.id !== socket.id && member.data.username?.toLocaleLowerCase("es") === target && !controls.admins.has(member.id)) {
+          member.emit("moderation-kick", reason);
+          member.leave(room);
+          member.data.room = "";
+          count += 1;
+        }
+      }
+      return count;
+    };
+
+    if (name === "ayuda" || name === "help") {
+      reply({ ok: true, message: "COMANDOS: /silenceadmin (o /sinlenceadmin) solo deja hablar a admins; /todos abre el chat; /ban NOMBRE bloquea; /desban NOMBRE desbloquea; /expulsar NOMBRE saca a una persona; /silenciar NOMBRE y /desilenciar NOMBRE controlan quién puede escribir; /anuncio TEXTO y /quitaranuncio fijan o quitan un aviso; /borrarultimo elimina el mensaje más reciente; /limpiarsala borra el historial; /cerrarsala cierra la sala. Para borrar un mensaje específico, usa el botón Borrar. La clave privada se comparte solo con coadmins." });
+      return;
+    }
+    if (!isAdmin) {
+      reply({ ok: false, message: "Solo los administradores pueden usar ese comando. Escribe /ayuda para ver los comandos." });
+      return;
+    }
+
+    if (["silenceadmin", "sinlenceadmin", "soloadmins"].includes(name)) {
+      controls.adminOnly = true;
+      emitRoomSettings(room, controls);
+      reply({ ok: true, message: "Modo solo administradores activado." });
+    } else if (["todos", "salapublica"].includes(name)) {
+      controls.adminOnly = false;
+      emitRoomSettings(room, controls);
+      reply({ ok: true, message: "Todos pueden volver a escribir." });
+    } else if (name === "ban" && targetName) {
+      if (controls.adminNames.has(normalizedTarget)) {
+        reply({ ok: false, message: "No puedes bloquear a un administrador." });
+        return;
+      }
+      controls.bannedUsers.add(normalizedTarget);
+      const count = await kickNamedMember(normalizedTarget, "Tu nombre fue bloqueado por un administrador.");
+      reply({ ok: true, message: `${targetName} quedó bloqueado${count ? " y salió de la sala" : ""}.` });
+    } else if (name === "desban" && targetName) {
+      controls.bannedUsers.delete(normalizedTarget);
+      reply({ ok: true, message: `Se quitó el bloqueo de ${targetName}.` });
+    } else if (name === "expulsar" && targetName) {
+      const count = await kickNamedMember(normalizedTarget, "Un administrador te sacó de la sala.");
+      reply({ ok: count > 0, message: count ? `${targetName} salió de la sala.` : `No encontré a ${targetName} como miembro no administrador.` });
+    } else if (name === "silenciar" && targetName) {
+      controls.mutedUsers.add(normalizedTarget);
+      reply({ ok: true, message: `${targetName} ya no puede enviar mensajes.` });
+    } else if (name === "desilenciar" && targetName) {
+      controls.mutedUsers.delete(normalizedTarget);
+      reply({ ok: true, message: `${targetName} puede volver a escribir.` });
+    } else if (name === "anuncio" && args.length) {
+      controls.announcement = cleanText(args.join(" "), 180);
+      emitRoomSettings(room, controls);
+      reply({ ok: true, message: "Anuncio fijado para la sala." });
+    } else if (name === "quitaranuncio") {
+      controls.announcement = "";
+      emitRoomSettings(room, controls);
+      reply({ ok: true, message: "Se quitó el anuncio." });
+    } else if (name === "borrarultimo") {
+      const messages = roomMessages.get(room) || [];
+      const removed = messages.pop();
+      if (removed?.imageData) storedImages.delete(removed.id);
+      io.to(room).emit("message-deleted", removed?.id || "");
+      reply({ ok: true, message: removed ? "Se borró el mensaje más reciente." : "No hay mensajes que borrar." });
+    } else if (name === "borrarmensaje" && args[0]) {
+      const messages = roomMessages.get(room) || [];
+      const index = messages.findIndex((item) => item.id === args[0]);
+      const [removed] = index >= 0 ? messages.splice(index, 1) : [];
+      if (removed?.imageData) storedImages.delete(removed.id);
+      io.to(room).emit("message-deleted", removed?.id || "");
+      reply({ ok: Boolean(removed), message: removed ? "Mensaje borrado." : "No encontré ese mensaje." });
+    } else if (name === "limpiarsala") {
+      const messages = roomMessages.get(room) || [];
+      removeRoomImages(messages);
+      roomMessages.set(room, []);
+      io.to(room).emit("room-cleared");
+      reply({ ok: true, message: "Se borró todo el historial de esta sala." });
+    } else if (name === "cerrarsala") {
+      const members = await findMembers();
+      for (const member of members) {
+        member.emit("room-closed", "Un administrador cerró esta sala.");
+        member.leave(room);
+        member.data.room = "";
+        roomControls.delete(room);
+      }
+      removeRoomImages(roomMessages.get(room) || []);
+      roomMessages.delete(room);
+      reply({ ok: true, message: "Sala cerrada." });
+    } else {
+      reply({ ok: false, message: "Comando desconocido o incompleto. Escribe /ayuda." });
+    }
+  });
+
   socket.on("disconnect", () => {
+    if (socket.data.room) getRoomControls(socket.data.room).admins.delete(socket.id);
     if (socket.data.room && socket.data.username) {
       socket.to(socket.data.room).emit("notice", `${socket.data.username} salió del chat.`);
     }
