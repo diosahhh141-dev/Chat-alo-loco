@@ -13,8 +13,11 @@
   const profilesList = document.querySelector("#profiles-list");
   const storyViewer = document.querySelector("#story-viewer");
   let currentAccount = null;
-  let currentProfile = null;
-  let socialChannel = null;
+  let currentProfile = null;  let socialChannel = null;
+  let storyGroups = [];
+  let activeStoryGroup = 0;
+  let activeStoryIndex = 0;
+  let storyRenderToken = 0;
   const joinPanel = document.querySelector("#join-panel");
   const chatPanel = document.querySelector("#chat-panel");
   const joinForm = document.querySelector("#join-form");
@@ -114,15 +117,23 @@
     if (!storyResult.data.length) {
       const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Todavía no hay historias. ¡Comparte la primera!"; storiesList.append(empty);
     }
+        const groupedStories = new Map();
     for (const story of storyResult.data) {
-      const profile = people.get(story.user_id) || { username: "Amigo", avatar_path: "" };
+      if (!groupedStories.has(story.user_id)) groupedStories.set(story.user_id, { profile: people.get(story.user_id) || { username: "Amigo", avatar_path: "" }, stories: [] });
+      groupedStories.get(story.user_id).stories.push(story);
+    }
+    storyGroups = Array.from(groupedStories.values());
+    for (const group of storyGroups) group.stories.reverse();
+    for (const [groupIndex, group] of storyGroups.entries()) {
+      const profile = group.profile;
       const button = document.createElement("button"); button.type = "button"; button.className = "story-card";
       button.append(avatarNode(profile.avatar_path, profile.username, "story-avatar"));
       const label = document.createElement("span"); label.textContent = profile.username; button.append(label);
-      button.addEventListener("click", () => openStory(story, profile));
+      if (group.stories.length > 1) { const count = document.createElement("span"); count.className = "story-count"; count.textContent = String(group.stories.length); count.setAttribute("aria-label", group.stories.length + " historias"); button.append(count); }
+      button.addEventListener("click", () => openStoryGroup(groupIndex));
       storiesList.append(button);
     }
-    profilesList.replaceChildren();
+profilesList.replaceChildren();
     for (const profile of profileResult.data) {
       const card = document.createElement("article"); card.className = "person-card";
       card.append(avatarNode(profile.avatar_path, profile.username));
@@ -155,17 +166,42 @@
   }
 
   async function openStory(story, profile) {
-    const slot = document.querySelector("#story-media-slot"); slot.replaceChildren();
+    const groupIndex = storyGroups.findIndex((group) => group.stories.some((item) => item.id === story.id));
+    if (groupIndex >= 0) openStoryGroup(groupIndex);
+  }
+
+  async function openStoryGroup(groupIndex, storyIndex = 0) {
+    activeStoryGroup = groupIndex; activeStoryIndex = storyIndex; storyViewer.hidden = false; await showActiveStory();
+  }
+
+  async function showActiveStory() {
+    const group = storyGroups[activeStoryGroup]; const story = group?.stories[activeStoryIndex];
+    if (!group || !story) return;
+    const token = ++storyRenderToken; const slot = document.querySelector("#story-media-slot");
+    slot.querySelectorAll("video").forEach((video) => video.pause()); slot.replaceChildren();
+    document.querySelector("#story-owner").textContent = group.profile.username;
+    document.querySelector("#story-counter").textContent = String(activeStoryIndex + 1) + " de " + group.stories.length;
+    document.querySelector("#story-caption-view").textContent = group.profile.username + (story.caption ? " · " + story.caption : "");
+    const progress = document.querySelector("#story-progress");
+    progress.replaceChildren(...group.stories.map((_, index) => { const segment = document.createElement("span"); segment.className = "story-progress-segment" + (index < activeStoryIndex ? " complete" : index === activeStoryIndex ? " current" : ""); return segment; }));
     try {
-      const url = await mediaUrl(story.media_path);
-      const media = document.createElement(story.media_type === "video" ? "video" : "img");
-      media.src = url; media.className = "story-media";
-      if (story.media_type === "video") { media.controls = true; media.autoplay = true; }
-      else media.alt = `Historia de ${profile.username}`;
-      slot.append(media);
-      document.querySelector("#story-caption-view").textContent = `${profile.username}${story.caption ? ` · ${story.caption}` : ""}`;
-      storyViewer.hidden = false;
-    } catch { setSocialStatus("No pude abrir esa historia. Puede que ya haya vencido.", true); }
+      const url = await mediaUrl(story.media_path); if (token !== storyRenderToken || storyViewer.hidden) return;
+      const media = document.createElement(story.media_type === "video" ? "video" : "img"); media.src = url; media.className = "story-media";
+      if (story.media_type === "video") { media.controls = true; media.autoplay = true; } else media.alt = "Historia de " + group.profile.username; slot.append(media);
+    } catch { if (token === storyRenderToken) setSocialStatus("No pude abrir esa historia. Puede que ya haya vencido.", true); }
+  }
+
+  function moveStory(direction) {
+    const group = storyGroups[activeStoryGroup]; if (!group) return; const nextIndex = activeStoryIndex + direction;
+    if (nextIndex >= 0 && nextIndex < group.stories.length) { activeStoryIndex = nextIndex; showActiveStory(); }
+    else if (direction > 0 && activeStoryGroup < storyGroups.length - 1) { activeStoryGroup += 1; activeStoryIndex = 0; showActiveStory(); }
+    else if (direction < 0 && activeStoryGroup > 0) { activeStoryGroup -= 1; activeStoryIndex = storyGroups[activeStoryGroup].stories.length - 1; showActiveStory(); }
+    else if (direction > 0) closeStory();
+  }
+
+  function closeStory() {
+    storyRenderToken += 1; storyViewer.hidden = true; const slot = document.querySelector("#story-media-slot");
+    slot.querySelectorAll("video").forEach((video) => video.pause()); slot.replaceChildren();
   }
 
   function openChat() {
@@ -243,7 +279,7 @@
     document.querySelector("#open-chat").addEventListener("click", openChat);
     document.querySelector("#home-from-chat").addEventListener("click", () => { currentRoom = ""; chatPanel.hidden = true; joinPanel.hidden = true; socialPanel.hidden = false; showSocialView("home"); loadSocialHome(); });
     document.querySelector("#sign-out").addEventListener("click", async () => { await supabase.auth.signOut(); });
-    document.querySelector("#close-story").addEventListener("click", () => { storyViewer.hidden = true; document.querySelector("#story-media-slot").replaceChildren(); });
+    document.querySelector("#close-story").addEventListener("click", closeStory); document.querySelector("#story-prev").addEventListener("click", () => moveStory(-1)); document.querySelector("#story-next").addEventListener("click", () => moveStory(1)); document.addEventListener("keydown", (event) => { if (storyViewer.hidden) return; if (event.key === "ArrowRight") { event.preventDefault(); moveStory(1); } else if (event.key === "ArrowLeft") { event.preventDefault(); moveStory(-1); } else if (event.key === "Escape") closeStory(); });
     document.querySelector("#create-story-home").addEventListener("click", () => showSocialView("profile"));
     document.querySelector("#enable-notifications").addEventListener("click", async () => {
       if (!("Notification" in window)) { setSocialStatus("Este navegador no permite avisos.", true); return; }
@@ -267,18 +303,29 @@
         if (socket.connected) { socket.disconnect(); socket.auth = { token: (await supabase.auth.getSession()).data.session.access_token }; socket.connect(); }
       } catch (error) { profileStatus.textContent = error.message || "No se pudo guardar el perfil."; }
     });
-    document.querySelector("#story-form").addEventListener("submit", async (event) => {
+        document.querySelector("#story-form").addEventListener("submit", async (event) => {
       event.preventDefault(); profileStatus.textContent = "Publicando historia…";
+      const uploadedPaths = [];
       try {
-        const file = document.querySelector("#story-file").files?.[0];
-        if (!file) throw new Error("Elige una foto o video.");
-        const path = await uploadMedia(file, "stories");
-        const { error } = await supabase.from("stories").insert({ user_id: currentAccount.id, media_path: path, media_type: file.type.startsWith("video/") ? "video" : "image", caption: document.querySelector("#story-caption").value.trim() });
-        if (error) throw error;
-        event.currentTarget.reset(); profileStatus.textContent = "Historia publicada. Desaparecerá en 24 horas."; await loadSocialHome();
-      } catch (error) { profileStatus.textContent = error.message || "No se pudo publicar la historia."; }
-    });
-  } else {
+        const files = Array.from(document.querySelector("#story-file").files || []);
+        if (!files.length) throw new Error("Elige al menos una foto o video.");
+        if (files.length > 10) throw new Error("Puedes subir hasta 10 archivos en una sola vez.");
+        const allowedTypes = ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"];
+        if (files.some((file) => !allowedTypes.includes(file.type))) throw new Error("Usa fotos JPG, PNG o WEBP, o videos MP4 o WEBM.");
+        if (files.some((file) => file.size > 50 * 1024 * 1024)) throw new Error("Cada archivo debe pesar menos de 50 MB.");
+        const caption = document.querySelector("#story-caption").value.trim(); const rows = [];
+        for (const [index, file] of files.entries()) {
+          profileStatus.textContent = "Subiendo historia " + (index + 1) + " de " + files.length + "…";
+          const path = await uploadMedia(file, "stories"); uploadedPaths.push(path);
+          rows.push({ user_id: currentAccount.id, media_path: path, media_type: file.type.startsWith("video/") ? "video" : "image", caption });
+        }
+        const { error } = await supabase.from("stories").insert(rows); if (error) throw error;
+        event.currentTarget.reset(); profileStatus.textContent = files.length + (files.length === 1 ? " historia publicada" : " historias publicadas") + ". Desaparecerán en 24 horas."; await loadSocialHome();
+      } catch (error) {
+        if (uploadedPaths.length) await supabase.storage.from("media").remove(uploadedPaths).catch(() => {});
+        profileStatus.textContent = error.message || "No se pudieron publicar las historias.";
+      }
+    });  } else {
     joinPanel.hidden = false;
   }
 
