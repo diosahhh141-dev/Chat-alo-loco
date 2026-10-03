@@ -1,5 +1,20 @@
 (() => {
-  const socket = io();
+  const appConfig = window.APP_CONFIG || {};
+  const socialMode = Boolean(appConfig.supabaseEnabled && window.supabase?.createClient);
+  const supabase = socialMode ? window.supabase.createClient(appConfig.supabaseUrl, appConfig.supabaseAnonKey) : null;
+  const socket = io({ autoConnect: !socialMode });
+  const authPanel = document.querySelector("#auth-panel");
+  const socialPanel = document.querySelector("#social-panel");
+  const loginForm = document.querySelector("#login-form");
+  const registerForm = document.querySelector("#register-form");
+  const authStatus = document.querySelector("#auth-status");
+  const profileStatus = document.querySelector("#profile-status");
+  const storiesList = document.querySelector("#stories-list");
+  const profilesList = document.querySelector("#profiles-list");
+  const storyViewer = document.querySelector("#story-viewer");
+  let currentAccount = null;
+  let currentProfile = null;
+  let socialChannel = null;
   const joinPanel = document.querySelector("#join-panel");
   const chatPanel = document.querySelector("#chat-panel");
   const joinForm = document.querySelector("#join-form");
@@ -7,6 +22,7 @@
   const messagesList = document.querySelector("#messages");
   const joinError = document.querySelector("#join-error");
   const roomInput = document.querySelector("#room");
+  const roomPasswordInput = document.querySelector("#room-password");
   const usernameInput = document.querySelector("#username");
   const adminKeyInput = document.querySelector("#admin-key");
   const messageInput = document.querySelector("#message");
@@ -26,6 +42,245 @@
   let selectedImageData = "";
   let currentReplyTo = "";
   const seenIds = new Set();
+
+  async function setSocialStatus(message, error = false) {
+    const status = document.querySelector("#social-status");
+    status.textContent = message;
+    status.classList.toggle("error", error);
+  }
+
+  function setAuthStatus(message, error = false) {
+    authStatus.textContent = message;
+    authStatus.classList.toggle("success", !error && Boolean(message));
+  }
+
+  function showSocialView(view) {
+    document.querySelector("#social-home-view").hidden = view !== "home";
+    document.querySelector("#social-profile-view").hidden = view !== "profile";
+    document.querySelector("#social-home").classList.toggle("active", view === "home");
+    document.querySelector("#social-profile").classList.toggle("active", view === "profile");
+  }
+
+  async function mediaUrl(path) {
+    if (!path) return "";
+    const { data, error } = await supabase.storage.from("media").createSignedUrl(path, 3600);
+    if (error) throw error;
+    return data.signedUrl;
+  }
+
+  function fileExtension(file) {
+    return ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "video/mp4": "mp4", "video/webm": "webm" })[file.type] || "bin";
+  }
+
+  async function uploadMedia(file, folder) {
+    if (!file || file.size > 50 * 1024 * 1024) throw new Error("El archivo debe pesar menos de 50 MB.");
+    const allowed = folder === "avatars"
+      ? ["image/jpeg", "image/png", "image/webp"]
+      : ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"];
+    if (!allowed.includes(file.type)) throw new Error("Elige una imagen JPG, PNG, WEBP o un video MP4/WEBM.");
+    const path = `${currentAccount.id}/${folder}/${crypto.randomUUID()}.${fileExtension(file)}`;
+    const { error } = await supabase.storage.from("media").upload(path, file, { contentType: file.type, upsert: false });
+    if (error) throw error;
+    return path;
+  }
+
+  function avatarNode(path, name, className = "profile-avatar") {
+    const node = document.createElement("div");
+    node.className = className;
+    node.textContent = (name || "✦").trim().slice(0, 1).toUpperCase();
+    if (path) mediaUrl(path).then((url) => {
+      const image = document.createElement("img");
+      image.src = url;
+      image.alt = `Foto de ${name}`;
+      node.replaceChildren(image);
+    }).catch(() => {});
+    return node;
+  }
+
+  async function loadSocialHome() {
+    if (!currentAccount) return;
+    setSocialStatus("Cargando historias y perfiles…");
+    const [storyResult, profileResult, notificationResult] = await Promise.all([
+      supabase.from("stories").select("id,user_id,media_path,media_type,caption,created_at,expires_at").gt("expires_at", new Date().toISOString()).order("created_at", { ascending: false }),
+      supabase.from("profiles").select("id,username,bio,avatar_path").order("username"),
+      supabase.from("notifications").select("id,title,body,room_code,created_at,read_at").eq("user_id", currentAccount.id).is("read_at", null).order("created_at", { ascending: false }).limit(8)
+    ]);
+    if (storyResult.error || profileResult.error || notificationResult.error) {
+      setSocialStatus("No pude cargar la comunidad. Revisa la conexión con Supabase.", true);
+      return;
+    }
+    const people = new Map(profileResult.data.map((profile) => [profile.id, profile]));
+    storiesList.replaceChildren();
+    if (!storyResult.data.length) {
+      const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Todavía no hay historias. ¡Comparte la primera!"; storiesList.append(empty);
+    }
+    for (const story of storyResult.data) {
+      const profile = people.get(story.user_id) || { username: "Amigo", avatar_path: "" };
+      const button = document.createElement("button"); button.type = "button"; button.className = "story-card";
+      button.append(avatarNode(profile.avatar_path, profile.username, "story-avatar"));
+      const label = document.createElement("span"); label.textContent = profile.username; button.append(label);
+      button.addEventListener("click", () => openStory(story, profile));
+      storiesList.append(button);
+    }
+    profilesList.replaceChildren();
+    for (const profile of profileResult.data) {
+      const card = document.createElement("article"); card.className = "person-card";
+      card.append(avatarNode(profile.avatar_path, profile.username));
+      const copy = document.createElement("div"); copy.className = "person-copy";
+      const name = document.createElement("strong"); name.textContent = profile.username;
+      const bio = document.createElement("p"); bio.textContent = profile.bio || "Aún no ha escrito una descripción.";
+      copy.append(name, bio); card.append(copy); profilesList.append(card);
+    }
+    const notices = notificationResult.data;
+    const unread = notices.length;
+    document.querySelector("#enable-notifications").textContent = unread ? `♧ ${unread}` : "♧";
+    const notificationBox = document.querySelector("#notifications-list");
+    notificationBox.replaceChildren();
+    if (unread) {
+      const heading = document.createElement("h3"); heading.className = "notification-heading"; heading.textContent = "Avisos nuevos"; notificationBox.append(heading);
+      for (const notification of notices) {
+        const row = document.createElement("button"); row.type = "button"; row.className = "notification-item";
+        const title = document.createElement("strong"); title.textContent = notification.title;
+        const body = document.createElement("span"); body.textContent = notification.body;
+        row.append(title, body);
+        row.addEventListener("click", async () => {
+          await supabase.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", notification.id);
+          if (notification.room_code) { roomInput.value = notification.room_code; document.querySelector("#room-password-row").hidden = false; openChat(); }
+          else loadSocialHome();
+        });
+        notificationBox.append(row);
+      }
+    }
+    setSocialStatus(`Hola, ${currentProfile.username}. Aquí está tu comunidad.`);
+  }
+
+  async function openStory(story, profile) {
+    const slot = document.querySelector("#story-media-slot"); slot.replaceChildren();
+    try {
+      const url = await mediaUrl(story.media_path);
+      const media = document.createElement(story.media_type === "video" ? "video" : "img");
+      media.src = url; media.className = "story-media";
+      if (story.media_type === "video") { media.controls = true; media.autoplay = true; }
+      else media.alt = `Historia de ${profile.username}`;
+      slot.append(media);
+      document.querySelector("#story-caption-view").textContent = `${profile.username}${story.caption ? ` · ${story.caption}` : ""}`;
+      storyViewer.hidden = false;
+    } catch { setSocialStatus("No pude abrir esa historia. Puede que ya haya vencido.", true); }
+  }
+
+  function openChat() {
+    socialPanel.hidden = true;
+    chatPanel.hidden = true;
+    joinPanel.hidden = false;
+    document.querySelector("#leave-join").hidden = false;
+    document.querySelector("#home-from-chat").hidden = false;
+    document.querySelector("#room-password-row").hidden = false;
+  }
+
+  async function loadMyProfile() {
+    const { data, error } = await supabase.from("profiles").select("id,username,bio,avatar_path").eq("id", currentAccount.id).single();
+    if (error) throw error;
+    currentProfile = data;
+    document.querySelector("#profile-name").value = data.username || "";
+    document.querySelector("#profile-bio").value = data.bio || "";
+    const previousAvatar = document.querySelector("#profile-avatar-large");
+    const nextAvatar = avatarNode(data.avatar_path, data.username, "profile-avatar large");
+    nextAvatar.id = "profile-avatar-large";
+    previousAvatar.replaceWith(nextAvatar);
+    await loadSocialHome();
+  }
+
+  async function applySession(session) {
+    currentAccount = session?.user || null;
+    if (!currentAccount) {
+      socket.disconnect();
+      if (socialChannel) { await supabase.removeChannel(socialChannel); socialChannel = null; }
+      currentProfile = null;
+      authPanel.hidden = false; socialPanel.hidden = true; joinPanel.hidden = true; chatPanel.hidden = true;
+      return;
+    }
+    authPanel.hidden = true; socialPanel.hidden = false; joinPanel.hidden = true; chatPanel.hidden = true;
+    socket.auth = { token: session.access_token };
+    if (socket.connected) socket.disconnect();
+    socket.connect();
+    try { await loadMyProfile(); }
+    catch (error) { setSocialStatus(error.message || "No pude cargar tu perfil.", true); }
+    if (socialChannel) await supabase.removeChannel(socialChannel);
+    socialChannel = supabase.channel(`social-notifications-${currentAccount.id}`).on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${currentAccount.id}` }, (payload) => {
+      if ("Notification" in window && document.hidden && Notification.permission === "granted") new Notification(payload.new.title, { body: payload.new.body });
+      loadSocialHome();
+    }).subscribe();
+  }
+
+  if (socialMode) {
+    joinPanel.hidden = true;
+    document.querySelector("#room-password-row").hidden = false;
+    loginForm.addEventListener("submit", async (event) => {
+      event.preventDefault(); setAuthStatus("Entrando…");
+      const { data, error } = await supabase.auth.signInWithPassword({ email: document.querySelector("#login-email").value.trim(), password: document.querySelector("#login-password").value });
+      if (error) { setAuthStatus(error.message, true); return; }
+      setAuthStatus("Sesión iniciada.");
+    });
+    registerForm.addEventListener("submit", async (event) => {
+      event.preventDefault(); setAuthStatus("Creando tu cuenta…");
+      const username = document.querySelector("#register-name").value.trim().replace(/\s+/g, " ").slice(0, 24);
+      const { data, error } = await supabase.auth.signUp({
+        email: document.querySelector("#register-email").value.trim(),
+        password: document.querySelector("#register-password").value,
+        options: { data: { username } }
+      });
+      if (error) { setAuthStatus(error.message, true); return; }
+      if (!data.session) { setAuthStatus("Cuenta creada. Revisa tu correo para confirmar y luego inicia sesión."); return; }
+      setAuthStatus("Cuenta creada. Preparando tu perfil…");
+    });
+    document.querySelector("#show-register").addEventListener("click", () => { loginForm.hidden = true; registerForm.hidden = false; setAuthStatus(""); });
+    document.querySelector("#show-login").addEventListener("click", () => { registerForm.hidden = true; loginForm.hidden = false; setAuthStatus(""); });
+    supabase.auth.onAuthStateChange((_event, session) => { if (_event !== "INITIAL_SESSION") queueMicrotask(() => applySession(session)); });
+    supabase.auth.getSession().then(({ data }) => applySession(data.session));
+
+    document.querySelector("#social-home").addEventListener("click", () => { showSocialView("home"); loadSocialHome(); });
+    document.querySelector("#social-profile").addEventListener("click", () => showSocialView("profile"));
+    document.querySelector("#open-chat").addEventListener("click", openChat);
+    document.querySelector("#home-from-chat").addEventListener("click", () => { currentRoom = ""; chatPanel.hidden = true; joinPanel.hidden = true; socialPanel.hidden = false; showSocialView("home"); loadSocialHome(); });
+    document.querySelector("#sign-out").addEventListener("click", async () => { await supabase.auth.signOut(); });
+    document.querySelector("#close-story").addEventListener("click", () => { storyViewer.hidden = true; document.querySelector("#story-media-slot").replaceChildren(); });
+    document.querySelector("#create-story-home").addEventListener("click", () => showSocialView("profile"));
+    document.querySelector("#enable-notifications").addEventListener("click", async () => {
+      if (!("Notification" in window)) { setSocialStatus("Este navegador no permite avisos.", true); return; }
+      const permission = await Notification.requestPermission();
+      setSocialStatus(permission === "granted" ? "Avisos activados en este navegador." : "No se activaron los avisos.", permission !== "granted");
+    });
+    document.querySelector("#profile-form").addEventListener("submit", async (event) => {
+      event.preventDefault(); profileStatus.textContent = "Guardando…";
+      try {
+        const username = document.querySelector("#profile-name").value.trim().replace(/\s+/g, " ").slice(0, 24);
+        const bio = document.querySelector("#profile-bio").value.trim().slice(0, 240);
+        if (!username) throw new Error("Escribe un nombre para mostrar.");
+        let avatar_path = currentProfile.avatar_path;
+        const file = document.querySelector("#avatar-file").files?.[0];
+        if (file) avatar_path = await uploadMedia(file, "avatars");
+        const { error } = await supabase.from("profiles").update({ username, bio, avatar_path }).eq("id", currentAccount.id);
+        if (error) throw error;
+        if (file && currentProfile.avatar_path) await supabase.storage.from("media").remove([currentProfile.avatar_path]).catch(() => {});
+        currentProfile = { ...currentProfile, username, bio, avatar_path };
+        profileStatus.textContent = "Perfil guardado."; await loadSocialHome();
+        if (socket.connected) { socket.disconnect(); socket.auth = { token: (await supabase.auth.getSession()).data.session.access_token }; socket.connect(); }
+      } catch (error) { profileStatus.textContent = error.message || "No se pudo guardar el perfil."; }
+    });
+    document.querySelector("#story-form").addEventListener("submit", async (event) => {
+      event.preventDefault(); profileStatus.textContent = "Publicando historia…";
+      try {
+        const file = document.querySelector("#story-file").files?.[0];
+        if (!file) throw new Error("Elige una foto o video.");
+        const path = await uploadMedia(file, "stories");
+        const { error } = await supabase.from("stories").insert({ user_id: currentAccount.id, media_path: path, media_type: file.type.startsWith("video/") ? "video" : "image", caption: document.querySelector("#story-caption").value.trim() });
+        if (error) throw error;
+        event.currentTarget.reset(); profileStatus.textContent = "Historia publicada. Desaparecerá en 24 horas."; await loadSocialHome();
+      } catch (error) { profileStatus.textContent = error.message || "No se pudo publicar la historia."; }
+    });
+  } else {
+    joinPanel.hidden = false;
+  }
 
   const roomFromUrl = new URLSearchParams(location.search).get("sala");
   if (roomFromUrl && /^[a-z0-9_-]{3,24}$/i.test(roomFromUrl)) roomInput.value = roomFromUrl;
@@ -145,12 +400,27 @@
     replyText.textContent = "";
   }
 
-  joinForm.addEventListener("submit", (event) => {
+  joinForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     joinError.textContent = "";
-    currentUsername = usernameInput.value.trim().slice(0, 24);
+    currentUsername = socialMode ? currentProfile?.username || "" : usernameInput.value.trim().slice(0, 24);
     currentAdminKey = adminKeyInput.value.trim();
     const room = roomInput.value.trim().toUpperCase();
+    if (socialMode) {
+      if (!currentAccount || !currentProfile) {
+        joinError.textContent = "Inicia sesión para entrar a una sala.";
+        return;
+      }
+      const { error } = await supabase.rpc("enter_room", { p_code: room, p_password: roomPasswordInput.value });
+      if (error) {
+        joinError.textContent = error.message || "No se pudo verificar la contraseña de la sala.";
+        return;
+      }
+      if (!socket.connected) {
+        joinError.textContent = "Conectando de forma segura…";
+        await new Promise((resolve) => socket.once("connect", resolve));
+      }
+    }
     socket.emit("join-room", { username: currentUsername, room, adminKey: currentAdminKey }, (result) => {
       if (!result?.ok) {
         joinError.textContent = result?.error || "No se pudo entrar. Inténtalo de nuevo.";
@@ -165,7 +435,9 @@
       messagesList.replaceChildren();
       seenIds.clear();
       joinPanel.hidden = true;
+      document.querySelector("#leave-join").hidden = true;
       chatPanel.hidden = false;
+      document.querySelector("#home-from-chat").hidden = !socialMode;
       updateRoomSettings(result.settings || { adminOnly: false, announcement: "" });
       result.messages.forEach(addMessage);
       if (!result.messages.length) addNotice("¡Sala lista! Comparte el código y saluda a tus amigos.");
@@ -175,7 +447,7 @@
     });
   });
 
-  messageForm.addEventListener("submit", (event) => {
+  messageForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const text = messageInput.value.trim();
     if ((!text && !selectedImageData) || !currentRoom) return;
@@ -190,7 +462,11 @@
       });
       return;
     }
-    socket.emit("send-message", { text, imageData: selectedImageData, replyToId: currentReplyTo }, (result) => {
+    let messageId = "";
+    if (socialMode) {
+      messageId = crypto.randomUUID();
+    }
+    socket.emit("send-message", { id: messageId, text, imageData: selectedImageData, replyToId: currentReplyTo }, (result) => {
       sendButton.disabled = false;
       if (!result?.ok) {
         chatNotice.textContent = result?.error || "No se pudo enviar. Inténtalo otra vez.";
@@ -260,7 +536,7 @@
       });
       previewImage.src = selectedImageData;
       imagePreview.hidden = false;
-      chatNotice.textContent = "La imagen es temporal y desaparecerá al reiniciarse el servidor.";
+      chatNotice.textContent = socialMode ? "La imagen se guardará junto con el mensaje." : "La imagen es temporal y desaparecerá al reiniciarse el servidor.";
       chatNotice.classList.remove("offline");
     } catch {
       chatNotice.textContent = "No pude abrir esa imagen. Prueba con otra.";
@@ -295,7 +571,9 @@
     clearSelectedImage();
     roomAnnouncement.hidden = true;
     chatPanel.hidden = true;
-    joinPanel.hidden = false;
+    joinPanel.hidden = socialMode;
+    socialPanel.hidden = !socialMode;
+    if (socialMode) { showSocialView("home"); loadSocialHome(); }
     messagesList.replaceChildren();
     chatNotice.textContent = message;
   }
@@ -314,7 +592,7 @@
         }
       });
     }
-    chatNotice.textContent = "Las imágenes y mensajes son temporales; se borran cuando se reinicia el servidor.";
+    chatNotice.textContent = socialMode ? "Los mensajes quedan guardados en tu cuenta." : "Las imágenes y mensajes son temporales; se borran cuando se reinicia el servidor.";
     chatNotice.classList.remove("offline");
   });
   socket.on("disconnect", () => {
@@ -334,9 +612,14 @@
     clearSelectedImage();
     history.replaceState(null, "", location.pathname);
     chatPanel.hidden = true;
-    joinPanel.hidden = false;
+    joinPanel.hidden = socialMode;
+    socialPanel.hidden = !socialMode;
+    document.querySelector("#leave-join").hidden = true;
+    if (socialMode) { showSocialView("home"); loadSocialHome(); }
     messagesList.replaceChildren();
   });
+
+  document.querySelector("#leave-join").addEventListener("click", () => { joinPanel.hidden = true; socialPanel.hidden = false; showSocialView("home"); });
 
   document.querySelector("#copy-link").addEventListener("click", async (event) => {
     const button = event.currentTarget;

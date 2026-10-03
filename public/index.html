@@ -6,6 +6,8 @@
   <meta name="theme-color" content="#111827">
   <title>Entre Amigos · Chat</title>
   <link rel="stylesheet" href="/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+  <script src="/config.js" defer></script>
   <script src="/socket.io/socket.io.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
@@ -16,15 +18,76 @@
       <div><p class="eyebrow">UN LUGAR PARA LOS TUYOS</p><h1>Entre Amigos</h1></div>
     </header>
 
+    <section id="auth-panel" class="card auth-card" hidden aria-labelledby="auth-title">
+      <div class="auth-intro"><span class="auth-spark">✦</span><p class="eyebrow">TU ESPACIO, TU GENTE</p><h2 id="auth-title">Conecta con los tuyos</h2><p class="muted">Crea tu perfil, comparte momentos y entra a tus salas privadas.</p></div>
+      <form id="login-form" class="auth-form">
+        <label for="login-email">Correo</label><input id="login-email" type="email" autocomplete="email" placeholder="tu@correo.com" required>
+        <label for="login-password">Contraseña</label><input id="login-password" type="password" autocomplete="current-password" minlength="8" placeholder="Mínimo 8 caracteres" required>
+        <button class="primary" type="submit">Entrar <span aria-hidden="true">→</span></button>
+        <button id="show-register" class="text-button" type="button">¿Eres nuevo? Crea tu perfil</button>
+      </form>
+      <form id="register-form" class="auth-form" hidden>
+        <label for="register-name">Nombre para mostrar</label><input id="register-name" maxlength="24" autocomplete="nickname" placeholder="Por ejemplo, Alex" required>
+        <label for="register-email">Correo</label><input id="register-email" type="email" autocomplete="email" placeholder="tu@correo.com" required>
+        <label for="register-password">Contraseña</label><input id="register-password" type="password" autocomplete="new-password" minlength="8" placeholder="Mínimo 8 caracteres" required>
+        <button class="primary" type="submit">Crear mi perfil <span aria-hidden="true">→</span></button>
+        <button id="show-login" class="text-button" type="button">Ya tengo cuenta</button>
+      </form>
+      <p id="auth-status" class="error" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="social-panel" class="card social-card" hidden aria-label="Comunidad">
+      <nav class="social-nav" aria-label="Navegación principal">
+        <button id="social-home" class="nav-pill active" type="button">Inicio</button>
+        <button id="social-profile" class="nav-pill" type="button">Mi perfil</button>
+        <button id="open-chat" class="primary nav-chat" type="button">Ir al chat</button>
+        <button id="enable-notifications" class="icon-button" type="button" title="Activar avisos" aria-label="Activar avisos">♧</button>
+        <button id="sign-out" class="icon-button" type="button" title="Cerrar sesión" aria-label="Cerrar sesión">↗</button>
+      </nav>
+      <section id="social-home-view" class="social-view">
+        <p id="social-status" class="social-status" role="status" aria-live="polite"></p>
+        <div class="welcome-banner"><p class="eyebrow">UN LUGAR PARA LOS TUYOS</p><h2>Momentos que se sienten cerca.</h2><p>Comparte historias y encuentra a tus amigos.</p></div>
+        <div class="section-heading"><div><p class="eyebrow">POR 24 HORAS</p><h3>Historias</h3></div><button id="create-story-home" class="secondary" type="button">＋ Subir historia</button></div>
+        <div id="stories-list" class="stories-list" aria-live="polite"></div>
+        <div id="notifications-list" class="notifications-list" aria-live="polite"></div>
+        <div class="section-heading people-heading"><div><p class="eyebrow">TU COMUNIDAD</p><h3>Perfiles</h3></div></div>
+        <div id="profiles-list" class="profiles-list"></div>
+      </section>
+      <section id="social-profile-view" class="social-view" hidden>
+        <div class="profile-editor-heading"><div><p class="eyebrow">TU HUELLA</p><h2>Mi perfil</h2></div><div id="profile-avatar-large" class="profile-avatar large">✦</div></div>
+        <form id="profile-form" class="profile-form">
+          <label for="profile-name">Nombre</label><input id="profile-name" maxlength="24" required>
+          <label for="profile-bio">Descripción</label><textarea id="profile-bio" maxlength="240" rows="3" placeholder="Cuéntales un poco sobre ti…"></textarea>
+          <label for="avatar-file">Foto de perfil</label><input id="avatar-file" type="file" accept="image/jpeg,image/png,image/webp">
+          <button class="primary" type="submit">Guardar perfil</button>
+        </form>
+        <div class="section-heading"><div><p class="eyebrow">TUS MOMENTOS</p><h3>Publicar historia</h3></div></div>
+        <form id="story-form" class="story-form">
+          <input id="story-file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" required>
+          <input id="story-caption" maxlength="180" placeholder="Escribe una descripción (opcional)">
+          <button class="primary" type="submit">Compartir por 24 h</button>
+          <p class="hint">Fotos o videos de hasta 50 MB. La historia desaparece después de 24 horas.</p>
+        </form>
+        <p id="profile-status" class="muted" role="status"></p>
+      </section>
+    </section>
+
+    <section id="story-viewer" class="story-viewer" hidden role="dialog" aria-modal="true" aria-label="Historia">
+      <button id="close-story" class="icon-button story-close" type="button" aria-label="Cerrar historia">×</button>
+      <div id="story-media-slot"></div><p id="story-caption-view" class="story-caption-view"></p>
+    </section>
+
     <section id="join-panel" class="card join-card" aria-labelledby="join-title">
       <p class="eyebrow">TU CONVERSACIÓN, A TU MANERA</p>
       <h2 id="join-title">Entra al chat</h2>
+      <button id="leave-join" class="text-button" type="button" hidden>← Volver al inicio</button>
       <p class="muted">Usa el mismo código de sala que tus amigos para encontrarlos.</p>
       <form id="join-form">
-        <label for="username">Tu nombre</label>
-        <input id="username" name="username" maxlength="24" autocomplete="nickname" placeholder="Por ejemplo, Alex" required>
+        <div id="username-row"><label for="username">Tu nombre</label>
+        <input id="username" name="username" maxlength="24" autocomplete="nickname" placeholder="Por ejemplo, Alex" required></div>
         <label for="room">Código de sala</label>
         <input id="room" name="room" maxlength="24" pattern="[A-Za-z0-9_-]{3,24}" autocomplete="off" placeholder="Ejemplo: PLANDELVIERNES" required>
+        <div id="room-password-row" hidden><label for="room-password">Contraseña de la sala</label><input id="room-password" name="room-password" type="password" minlength="4" autocomplete="current-password" placeholder="Mínimo 4 caracteres"></div>
         <label for="admin-key">Clave privada de administrador <span class="optional">(opcional)</span></label>
         <input id="admin-key" name="admin-key" type="password" maxlength="80" autocomplete="new-password" placeholder="Solo tú y tus coadministradores">
         <p class="admin-key-hint">La primera clave de 8 caracteres o más que se use en esta sala quedará registrada como clave de administración.</p>
@@ -37,7 +100,7 @@
     <section id="chat-panel" class="card chat-card" hidden aria-label="Conversación">
       <header class="chat-header">
         <div><p class="eyebrow">SALA</p><h2 id="room-title"></h2></div>
-        <div class="chat-actions"><span class="online"><i></i> En línea</span><button id="copy-link" class="secondary" type="button">Copiar invitación</button><button id="leave" class="icon-button" type="button" aria-label="Salir de la sala" title="Salir">×</button></div>
+        <div class="chat-actions"><span class="online"><i></i> En línea</span><button id="home-from-chat" class="secondary" type="button" hidden>Inicio</button><button id="copy-link" class="secondary" type="button">Copiar invitación</button><button id="leave" class="icon-button" type="button" aria-label="Salir de la sala" title="Salir">×</button></div>
       </header>
       <div id="room-announcement" class="room-announcement" hidden></div>
       <ol id="messages" class="messages" aria-live="polite" aria-label="Mensajes"></ol>
