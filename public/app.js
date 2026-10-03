@@ -8,6 +8,7 @@
   const joinError = document.querySelector("#join-error");
   const roomInput = document.querySelector("#room");
   const usernameInput = document.querySelector("#username");
+  const adminKeyInput = document.querySelector("#admin-key");
   const messageInput = document.querySelector("#message");
   const imageInput = document.querySelector("#image-file");
   const imagePreview = document.querySelector("#image-preview");
@@ -16,8 +17,12 @@
   const replyAuthor = document.querySelector("#reply-author");
   const replyText = document.querySelector("#reply-text");
   const chatNotice = document.querySelector("#chat-notice");
+  const roomAnnouncement = document.querySelector("#room-announcement");
   let currentRoom = "";
   let currentUsername = "";
+  let currentAdminKey = "";
+  let isAdmin = false;
+  let isCreator = false;
   let selectedImageData = "";
   let currentReplyTo = "";
   const seenIds = new Set();
@@ -46,6 +51,12 @@
     meta.className = "message-meta";
     const name = document.createElement("strong");
     name.textContent = message.username;
+    if (message.isCreator || message.isAdmin) {
+      const badge = document.createElement("span");
+      badge.className = message.isCreator ? "admin-badge creator-badge" : "admin-badge";
+      badge.textContent = message.isCreator ? "CREATOR" : "ADMIN";
+      name.append(" ", badge);
+    }
     const time = document.createElement("time");
     const date = new Date(message.time);
     time.dateTime = date.toISOString();
@@ -86,6 +97,19 @@
     replyButton.setAttribute("aria-label", `Responder a ${message.username}`);
     replyButton.addEventListener("click", () => beginReply(message));
     bubble.append(replyButton);
+    if (isAdmin) {
+      const deleteButton = document.createElement("button");
+      deleteButton.className = "admin-delete-action";
+      deleteButton.type = "button";
+      deleteButton.textContent = "Borrar";
+      deleteButton.setAttribute("aria-label", "Borrar este mensaje");
+      deleteButton.addEventListener("click", () => {
+        socket.emit("admin-command", { command: `/borrarmensaje ${message.id}` }, (result) => {
+          if (result?.message) addNotice(result.message);
+        });
+      });
+      bubble.append(deleteButton);
+    }
     item.append(bubble);
 
     let touchStart = null;
@@ -125,13 +149,16 @@
     event.preventDefault();
     joinError.textContent = "";
     currentUsername = usernameInput.value.trim().slice(0, 24);
+    currentAdminKey = adminKeyInput.value.trim();
     const room = roomInput.value.trim().toUpperCase();
-    socket.emit("join-room", { username: currentUsername, room }, (result) => {
+    socket.emit("join-room", { username: currentUsername, room, adminKey: currentAdminKey }, (result) => {
       if (!result?.ok) {
         joinError.textContent = result?.error || "No se pudo entrar. Inténtalo de nuevo.";
         return;
       }
       currentRoom = result.room;
+      isAdmin = Boolean(result.admin);
+      isCreator = Boolean(result.creator);
       document.querySelector("#room-title").textContent = currentRoom;
       roomInput.value = currentRoom;
       history.replaceState(null, "", `?sala=${encodeURIComponent(currentRoom)}`);
@@ -139,8 +166,11 @@
       seenIds.clear();
       joinPanel.hidden = true;
       chatPanel.hidden = false;
+      updateRoomSettings(result.settings || { adminOnly: false, announcement: "" });
       result.messages.forEach(addMessage);
       if (!result.messages.length) addNotice("¡Sala lista! Comparte el código y saluda a tus amigos.");
+      if (isAdmin) addNotice("Entraste como administrador. Escribe /ayuda para ver tus comandos.");
+      else if (result.adminKeyError) addNotice("La clave no coincide con la de administrador; entraste como miembro.");
       messageInput.focus();
     });
   });
@@ -151,6 +181,15 @@
     if ((!text && !selectedImageData) || !currentRoom) return;
     const sendButton = messageForm.querySelector("button[type='submit']");
     sendButton.disabled = true;
+    if (text.startsWith("/") && !selectedImageData) {
+      socket.emit("admin-command", { command: text }, (result) => {
+        sendButton.disabled = false;
+        if (result?.message) addNotice(result.message);
+        messageInput.value = "";
+        messageInput.focus();
+      });
+      return;
+    }
     socket.emit("send-message", { text, imageData: selectedImageData, replyToId: currentReplyTo }, (result) => {
       sendButton.disabled = false;
       if (!result?.ok) {
@@ -232,10 +271,43 @@
 
   socket.on("message", addMessage);
   socket.on("notice", addNotice);
+  function updateRoomSettings(settings = {}) {
+    roomAnnouncement.textContent = settings.announcement || (settings.adminOnly ? "🔒 Solo los administradores pueden escribir." : "");
+    roomAnnouncement.hidden = !roomAnnouncement.textContent;
+  }
+  socket.on("room-settings", updateRoomSettings);
+  socket.on("message-deleted", (id) => {
+    if (!id) return;
+    messagesList.querySelector(`[data-message-id="${CSS.escape(id)}"]`)?.remove();
+    seenIds.delete(id);
+  });
+  socket.on("room-cleared", () => {
+    messagesList.replaceChildren();
+    seenIds.clear();
+    addNotice("Un administrador borró el historial de la sala.");
+  });
+  function leaveModeratedRoom(message) {
+    currentRoom = "";
+    currentAdminKey = "";
+    isAdmin = false;
+    isCreator = false;
+    clearReply();
+    clearSelectedImage();
+    roomAnnouncement.hidden = true;
+    chatPanel.hidden = true;
+    joinPanel.hidden = false;
+    messagesList.replaceChildren();
+    chatNotice.textContent = message;
+  }
+  socket.on("moderation-kick", leaveModeratedRoom);
+  socket.on("room-closed", leaveModeratedRoom);
   socket.on("connect", () => {
     if (currentRoom) {
-      socket.emit("join-room", { username: currentUsername, room: currentRoom }, (result) => {
+      socket.emit("join-room", { username: currentUsername, room: currentRoom, adminKey: currentAdminKey }, (result) => {
         if (result?.ok) {
+          isAdmin = Boolean(result.admin);
+          isCreator = Boolean(result.creator);
+          updateRoomSettings(result.settings);
           messagesList.replaceChildren();
           seenIds.clear();
           result.messages.forEach(addMessage);
@@ -253,6 +325,11 @@
   document.querySelector("#leave").addEventListener("click", () => {
     currentRoom = "";
     currentUsername = "";
+    currentAdminKey = "";
+    isAdmin = false;
+    isCreator = false;
+    adminKeyInput.value = "";
+    roomAnnouncement.hidden = true;
     clearReply();
     clearSelectedImage();
     history.replaceState(null, "", location.pathname);

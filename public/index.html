@@ -25,6 +25,9 @@
         <input id="username" name="username" maxlength="24" autocomplete="nickname" placeholder="Por ejemplo, Alex" required>
         <label for="room">Código de sala</label>
         <input id="room" name="room" maxlength="24" pattern="[A-Za-z0-9_-]{3,24}" autocomplete="off" placeholder="Ejemplo: PLANDELVIERNES" required>
+        <label for="admin-key">Clave privada de administrador <span class="optional">(opcional)</span></label>
+        <input id="admin-key" name="admin-key" type="password" maxlength="80" autocomplete="new-password" placeholder="Solo tú y tus coadministradores">
+        <p class="admin-key-hint">La primera clave de 8 caracteres o más que se use en esta sala quedará registrada como clave de administración.</p>
         <button class="primary" type="submit">Entrar al chat <span aria-hidden="true">→</span></button>
         <p id="join-error" class="error" role="alert"></p>
       </form>
@@ -36,6 +39,7 @@
         <div><p class="eyebrow">SALA</p><h2 id="room-title"></h2></div>
         <div class="chat-actions"><span class="online"><i></i> En línea</span><button id="copy-link" class="secondary" type="button">Copiar invitación</button><button id="leave" class="icon-button" type="button" aria-label="Salir de la sala" title="Salir">×</button></div>
       </header>
+      <div id="room-announcement" class="room-announcement" hidden></div>
       <ol id="messages" class="messages" aria-live="polite" aria-label="Mensajes"></ol>
       <div id="image-preview" class="image-preview" hidden>
         <img id="preview-image" alt="Vista previa de la imagen seleccionada">
