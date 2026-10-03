@@ -42,6 +42,13 @@
         <span>Imagen lista para enviar</span>
         <button id="remove-image" class="secondary" type="button">Quitar</button>
       </div>
+      <div id="reply-preview" class="reply-preview" hidden aria-live="polite">
+        <div class="reply-preview-copy">
+          <strong>Respondiendo a <span id="reply-author"></span></strong>
+          <p id="reply-text"></p>
+        </div>
+        <button id="cancel-reply" class="icon-button" type="button" aria-label="Cancelar respuesta" title="Cancelar respuesta">×</button>
+      </div>
       <form id="message-form" class="message-form">
         <label class="visually-hidden" for="message">Escribe un mensaje</label>
         <input id="message" maxlength="500" autocomplete="off" placeholder="Escribe algo bonito…">

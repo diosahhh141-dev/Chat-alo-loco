@@ -12,10 +12,14 @@
   const imageInput = document.querySelector("#image-file");
   const imagePreview = document.querySelector("#image-preview");
   const previewImage = document.querySelector("#preview-image");
+  const replyPreview = document.querySelector("#reply-preview");
+  const replyAuthor = document.querySelector("#reply-author");
+  const replyText = document.querySelector("#reply-text");
   const chatNotice = document.querySelector("#chat-notice");
   let currentRoom = "";
   let currentUsername = "";
   let selectedImageData = "";
+  let currentReplyTo = "";
   const seenIds = new Set();
 
   const roomFromUrl = new URLSearchParams(location.search).get("sala");
@@ -34,6 +38,7 @@
     seenIds.add(message.id);
     const item = document.createElement("li");
     item.className = `message-item${message.username === currentUsername ? " mine" : ""}`;
+    item.dataset.messageId = message.id;
 
     const bubble = document.createElement("article");
     bubble.className = "bubble";
@@ -47,6 +52,16 @@
     time.textContent = new Intl.DateTimeFormat("es", { hour: "2-digit", minute: "2-digit" }).format(date);
     meta.append(name, time);
     bubble.append(meta);
+    if (message.replyTo) {
+      const quote = document.createElement("div");
+      quote.className = "reply-quote";
+      const quoteName = document.createElement("strong");
+      quoteName.textContent = message.replyTo.username;
+      const quoteContent = document.createElement("span");
+      quoteContent.textContent = message.replyTo.text || (message.replyTo.hasImage ? "Imagen" : "Mensaje");
+      quote.append(quoteName, quoteContent);
+      bubble.append(quote);
+    }
     if (message.text) {
       const text = document.createElement("p");
       text.textContent = message.text;
@@ -64,9 +79,46 @@
       expired.textContent = "Esta imagen temporal ya no está disponible.";
       bubble.append(expired);
     }
+    const replyButton = document.createElement("button");
+    replyButton.className = "reply-action";
+    replyButton.type = "button";
+    replyButton.textContent = "↩ Responder";
+    replyButton.setAttribute("aria-label", `Responder a ${message.username}`);
+    replyButton.addEventListener("click", () => beginReply(message));
+    bubble.append(replyButton);
     item.append(bubble);
+
+    let touchStart = null;
+    item.addEventListener("touchstart", (event) => {
+      const touch = event.changedTouches[0];
+      touchStart = { x: touch.clientX, y: touch.clientY };
+    }, { passive: true });
+    item.addEventListener("touchend", (event) => {
+      if (!touchStart) return;
+      const touch = event.changedTouches[0];
+      const deltaX = touch.clientX - touchStart.x;
+      const deltaY = touch.clientY - touchStart.y;
+      touchStart = null;
+      if (deltaX < -70 && Math.abs(deltaX) > Math.abs(deltaY) * 1.25) beginReply(message);
+    }, { passive: true });
+
     messagesList.append(item);
     messagesList.scrollTop = messagesList.scrollHeight;
+  }
+
+  function beginReply(message) {
+    currentReplyTo = message.id;
+    replyAuthor.textContent = message.username;
+    replyText.textContent = message.text || (message.imageData || message.imageExpired ? "Imagen" : "Mensaje");
+    replyPreview.hidden = false;
+    messageInput.focus();
+  }
+
+  function clearReply() {
+    currentReplyTo = "";
+    replyPreview.hidden = true;
+    replyAuthor.textContent = "";
+    replyText.textContent = "";
   }
 
   joinForm.addEventListener("submit", (event) => {
@@ -99,7 +151,7 @@
     if ((!text && !selectedImageData) || !currentRoom) return;
     const sendButton = messageForm.querySelector("button[type='submit']");
     sendButton.disabled = true;
-    socket.emit("send-message", { text, imageData: selectedImageData }, (result) => {
+    socket.emit("send-message", { text, imageData: selectedImageData, replyToId: currentReplyTo }, (result) => {
       sendButton.disabled = false;
       if (!result?.ok) {
         chatNotice.textContent = result?.error || "No se pudo enviar. Inténtalo otra vez.";
@@ -108,6 +160,7 @@
       }
       messageInput.value = "";
       clearSelectedImage();
+      clearReply();
       messageInput.focus();
     });
   });
@@ -121,6 +174,7 @@
 
   document.querySelector("#choose-image").addEventListener("click", () => imageInput.click());
   document.querySelector("#remove-image").addEventListener("click", clearSelectedImage);
+  document.querySelector("#cancel-reply").addEventListener("click", clearReply);
   imageInput.addEventListener("change", async () => {
     const file = imageInput.files?.[0];
     if (!file) return;
@@ -199,6 +253,8 @@
   document.querySelector("#leave").addEventListener("click", () => {
     currentRoom = "";
     currentUsername = "";
+    clearReply();
+    clearSelectedImage();
     history.replaceState(null, "", location.pathname);
     chatPanel.hidden = true;
     joinPanel.hidden = false;
